@@ -1,0 +1,426 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: This stack deploys common resources that are required for the DevOps setup per env.
+Parameters:
+  AppName:
+    Type: String
+    Default: estgro
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - staging
+      - production
+  RepositoryName:
+    Type: String
+    Default: estgro
+  BranchName:
+    Type: String
+    Default: main
+  CodePipelineExecutionLamdaFunctionArn:
+    Type: String
+    Default: arn:aws:lambda:eu-west-2:774000540457:function:estgro-production-code-pipeline-trigger
+  OtherAwsAccount:
+    Type: String
+    Default: 381314751335
+
+Resources:
+  # Cloud watch event rule to trigger codepipeline lamda function
+  AmazonCloudWatchEventRule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Join
+            - ""
+            - - "arn:aws:codecommit:"
+              - !Ref "AWS::Region"
+              - ":"
+              - !Ref "AWS::AccountId"
+              - ":"
+              - !Ref RepositoryName
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref BranchName
+      Targets:
+        - Arn: !Ref CodePipelineExecutionLamdaFunctionArn
+          Id: codepipeline-lambda-trigger
+  # S3 Bucket for Codepipeline Artifacts
+  CodePipelineArtifactStoreBucket:
+    Type: "AWS::S3::Bucket"
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub codepipeline-${AppName}-${RepositoryName}-${BranchName}-${AWS::Region}-${AWS::AccountId}
+      Tags:
+        - Key: "environment"
+          Value: !Ref Environment
+  # S3 Bucket Policy for Code Pipeline
+  CodePipelineArtifactStoreBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref CodePipelineArtifactStoreBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource: !Join
+              - ""
+              - - !GetAtt
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+            Condition:
+              StringNotEquals:
+                "s3:x-amz-server-side-encryption": "aws:kms"
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: !Join
+              - ""
+              - - !GetAtt
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: !Join
+              - ""
+              - - !GetAtt
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+          - Sid: AllowGetPutOnS3ToHostAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${OtherAwsAccount}:root
+            Action:
+              - s3:Get*
+              - s3:Put*
+            Resource: !Join
+              - ""
+              - - !GetAtt
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+          - Sid: AllowListBucketOnS3ToHostAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${OtherAwsAccount}:root
+            Action: s3:ListBucket
+            Resource: !Join
+              - ""
+              - - !GetAtt
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+  #Api Gateway
+  ApiGateway:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-gateway
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api Accreditation And Referral
+  ApiAccreditationAndReferral:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-accreditation-and-referral
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api AdvisorAuth
+  ApiAdvisorAuth:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-advisor-auth
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api Application
+  ApiApplication:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-application
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api ClientAuth
+  ApiClientAuth:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-client-auth
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api ClientData
+  ApiClientData:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-client-data
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api Document
+  ApiDocument:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-document
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api DocumentData
+  ApiDocumentData:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-document-data
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #Api Integration
+  ApiIntegration:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-integration
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #ApiManageUsers
+  ApiManageUsers:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-manage-users
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #ApiMiscellaneous
+  ApiMiscellaneous:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-miscellaneous
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #ApiNotification
+  ApiNotification:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-notification
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #ApiPayment
+  ApiPayment:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-payment
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #ApiPortalSettings
+  ApiPortalSettings:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-portal-settings
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #ApiQuestionnaire
+  ApiQuestionnaire:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: api-questionnaire
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #EmailBackgroundScheduleService
+  EmailBackgroundScheduleService:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: email-background-schedule-service
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #SqsConsumer
+  SqsConsumer:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: sqs-consumer
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #WebAdminPortal
+  WebAdminPortal:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: web-admin-portal
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #WebAdvisorPortal
+  WebAdvisorPortal:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: web-advisor-portal
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #WebClientPortal
+  WebClientPortal:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: web-client-portal
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #WebInstructionTool
+  WebInstructionTool:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: web-instruction-tool
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+  #WebServiceProviderPortal
+  WebServiceProviderPortal:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL: >-
+        https://cf-templates-estrgo.s3.eu-west-2.amazonaws.com/production/devops-ecs-pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ServiceName: web-service-provider-portal
+        AppName: !Ref AppName
+        RepositoryName: !Ref RepositoryName
+        BranchName: !Ref BranchName
+        OtherAwsAccount: !Ref OtherAwsAccount
+Outputs:
+  ArtifactStoreBucketName:
+    Value: !Ref CodePipelineArtifactStoreBucket
+    Export:
+      Name: !Sub ${Environment}-codepipeline-bucket-name
