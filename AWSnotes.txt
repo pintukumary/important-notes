@@ -1,1 +1,11 @@
 To Setup Cloudwatch Alarm on billing base : https://prnt.sc/07O84YQ--EGP
+
+To update cloudformation :
+aws cloudformation update-stack \
+  --stack-name ec2-vpc-cloudformation \
+  --template-url https://rest-api-get-data.s3.amazonaws.com/template.yml \
+  --capabilities CAPABILITY_NAMED_IAM
+
+Note : ec2-vpc-cloudformation - it is Cloudformation stack name
+      https://rest-api-get-data.s3.amazonaws.com/template.yml - it is cloudformation template file and uploaded in s3 bucket
+      CAPABILITY_NAMED_IAM  - it will be default
