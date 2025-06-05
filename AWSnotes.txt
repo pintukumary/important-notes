@@ -9,3 +9,6 @@ aws cloudformation update-stack \
 Note : ec2-vpc-cloudformation - it is Cloudformation stack name
       https://rest-api-get-data.s3.amazonaws.com/template.yml - it is cloudformation template file and uploaded in s3 bucket
       CAPABILITY_NAMED_IAM  - it will be default
+
+Important : if you are using lambda function with pipeline and you want to update zip file every time in lambda function and it zip will be pickup from s3 bucket then
+each time zip name should be uniq to update by cloudformation otherwise with same name of zip file it con not be identify any change inside of zip file.
