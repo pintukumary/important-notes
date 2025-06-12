@@ -1,0 +1,34 @@
+service: test-admin      # for production lambda of boxlty 2.0
+
+provider:
+ name: aws
+ runtime: nodejs16.x
+ memorySize: 1024
+ timeout: 300 # optional, in seconds, default is 6
+ stage: dev
+ region: ap-south-1
+ vpc:
+   securityGroupIds:
+     - sg-xxxxxxxx1  # Replace with your first security group ID
+     - sg-xxxxxxxx2  # Replace with your second security group ID
+   subnetIds:
+     - subnet-xxxxxxxx1  # Replace with your first subnet ID
+     - subnet-xxxxxxxx2  # Replace with your second subnet ID
+
+functions:
+ api:
+   handler: lambda.universal
+   events:
+     - http: ANY {proxy+}
+     - http: ANY /
+plugins:
+ - serverless-apigw-binary
+ - serverless-offline
+
+custom:
+  apigwBinary:
+    types:           #list of mime-types
+      - 'image/png'
+      - 'image/jpg'
+      - 'image/jpeg'
+      - '*/*'
