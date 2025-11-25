@@ -1,0 +1,49 @@
+To Setup presign-url for upload data into s3 bucket.
+
+1. create python file inside cloudshell or inside server where you have configure aws-cli to connect aws.
+
+file : generate_upload_url.py  # paste the Below line #
+
+-------------------------------------------------------------------------------------
+
+# save as generate_upload_url.py
+import boto3
+from botocore.exceptions import NoCredentialsError
+import sys
+
+def generate_upload_presigned_url(bucket_name, object_key, expiration=3600):
+    """Generate a presigned URL for uploading a file to S3"""
+    s3_client = boto3.client('s3')
+    try:
+        response = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': bucket_name, 'Key': object_key},
+            ExpiresIn=expiration
+        )
+    except NoCredentialsError:
+        print("AWS credentials not found")
+        return None
+    return response
+
+if __name__ == "__main__":
+    bucket = "codepipeline-ap-south-1-1ec459a6dd7f-42e7-bb5e-ab7d651322a4"
+    key = "test.txt"
+    
+    url = generate_upload_presigned_url(bucket, key, 3600)
+    if url:
+        print("Upload presigned URL:")
+        print(url)
+    else:
+        print("Failed to generate presigned URL")
+
+---------------------------------------------------------------------------------
+
+In this please update Bucket-Name , key which file you want to upload and time as 3600 second is default now inside code
+
+2. run command -> python generate_upload_url.py     # it will generate the presign url so copy that and save
+
+
+Now provide the presign url to client who want to upload data into s3 bucket and as above mention file name
+
+upload command : curl -X PUT -T "myfile.txt" "<presign-url>"
+
