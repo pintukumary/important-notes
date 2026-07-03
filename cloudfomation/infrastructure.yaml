@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Infrastructure template managed by CodePipeline"
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Description: Project name for resource naming
+
+  ArtifactBucketName:
+    Type: String
+    Description: Existing S3 bucket for artifacts
+  ExistingRoleName:
+    Type: String
+    Description: Name of the existing IAM role to attach to EC2
+    Default: "ArkenOneWebAppCustomRoleForEc2"
+
+Mappings:
+  EnvironmentConfig:
+    dev:
+      InstanceType: "t3.small"
+      VolumeSize: 30
+      VpcId: "vpc-03aa841ba423c736d"
+      SubnetId: "subnet-0fef12305c5dc158f"
+      EC2TagValue: "development"
+      DeploymentConfig: "CodeDeployDefault.OneAtATime"
+      SecurityGroupId: "sg-08820b48a2ca5dc38"
+      KeyPairName: "devt-apis-instance-key"
+      ApplicationPort: 80
+    staging:
+      InstanceType: "t3.small"
+      VolumeSize: 50
+      VpcId: "vpc-078de38a6b9e2ff79"
+      SubnetId: "subnet-09bf3a2a944d81bfe"
+      EC2TagValue: "staging"
+      DeploymentConfig: "CodeDeployDefault.OneAtATime"
+      SecurityGroupId: "sg-08820b48a2ca5dc38"
+      KeyPairName: "devt-apis-instance-key"
+      ApplicationPort: 80
+    prod:
+      InstanceType: "t3.medium"
+      VolumeSize: 100
+      VpcId: "vpc-078de38a6b9e2ff79"
+      SubnetId: "subnet-09bf3a2a944d81bfe"
+      EC2TagValue: "production"
+      DeploymentConfig: "CodeDeployDefault.BlueGreenCanary10Percent5Minutes"
+      SecurityGroupId: "sg-08820b48a2ca5dc38"
+      KeyPairName: "devt-apis-instance-key"
+      ApplicationPort: 80
+
+Conditions:
+  IsProdEnvironment: !Equals [!Ref Environment, "prod"]
+
+Resources:
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${ProjectName}-${Environment}-instance-profile"
+      Roles:
+        - !Ref ExistingRoleName
+
+  # EC2 Instance
+  WebServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c17cb8e234335014 # Ubuntu 22.04 LTS in eu-west-2 (more stable for CodeDeploy)
+      InstanceType: !FindInMap [EnvironmentConfig, !Ref Environment, InstanceType]
+      KeyName: !FindInMap [EnvironmentConfig, !Ref Environment, KeyPairName]
+      SecurityGroupIds:
+        - !FindInMap [EnvironmentConfig, !Ref Environment, SecurityGroupId]
+      SubnetId: !FindInMap [EnvironmentConfig, !Ref Environment, SubnetId]
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !FindInMap [EnvironmentConfig, !Ref Environment, VolumeSize]
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+          # Update and install packages
+          apt-get update -y
+          apt-get install -y ruby-full wget curl unzip nginx
+
+          # Install AWS CLI v2
+          cd /tmp
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          ./aws/install
+          # Install CodeDeploy agent
+          cd /home/ubuntu
+          wget https://aws-codedeploy-${AWS::Region}.s3.${AWS::Region}.amazonaws.com/latest/install
+          chmod +x ./install
+          ./install auto
+          sleep 10
+          service codedeploy-agent start
+
+          # Configure nginx
+          cat <<'EOF' > /etc/nginx/sites-available/default
+          server {
+              listen 80;
+              listen [::]:80;
+              
+              server_name arkenone.devt.arken.legal;
+              
+              root /var/www/html;
+              index index.html;
+              
+              location / {
+                  proxy_pass http://127.0.0.1:3000;
+                  proxy_http_version 1.1;
+
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_buffer_size 16k;
+                  proxy_buffers 4 32k;
+                  proxy_busy_buffers_size 32k;
+
+                  proxy_cache_bypass $http_upgrade;
+              }
+          }
+          EOF
+
+          # Test and restart nginx
+          nginx -t && systemctl restart nginx
+          systemctl enable nginx
+          # Get a token first
+          TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+          # Use the token to get instance ID
+          INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+          echo "Instance ID: $INSTANCE_ID"
+          # Register with target group
+          aws elbv2 register-targets \
+            --target-group-arn arn:aws:elasticloadbalancing:eu-west-2:957875358766:targetgroup/devt-ec2-webapp-arkenone-tg/96d4d9b8f7d1d79b \
+            --targets Id=$INSTANCE_ID
+
+          echo "Instance registered with target group"
+          echo "Setup completed" >> /var/log/user-data.log
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-web-server"
+        - Key: Environment
+          Value: !FindInMap [EnvironmentConfig, !Ref Environment, EC2TagValue]
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: KeyPair
+          Value: !FindInMap [EnvironmentConfig, !Ref Environment, KeyPairName]
+
+  # CodeDeploy Service Role
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-codedeploy-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      Policies:
+        - PolicyName: CodeDeployEC2Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:DescribeInstances
+                  - autoscaling:*
+                Resource: "*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-codedeploy-role"
+        - Key: Environment
+          Value: !FindInMap [EnvironmentConfig, !Ref Environment, EC2TagValue]
+
+  # CodeDeploy Application
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${ProjectName}-${Environment}-app"
+      ComputePlatform: Server
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-app"
+        - Key: Environment
+          Value: !FindInMap [EnvironmentConfig, !Ref Environment, EC2TagValue]
+
+  # CodeDeploy Deployment Group
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub "${ProjectName}-${Environment}-deployment-group"
+      ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
+      DeploymentConfigName: !FindInMap [EnvironmentConfig, !Ref Environment, DeploymentConfig]
+      Ec2TagFilters:
+        - Type: KEY_AND_VALUE
+          Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-web-server"
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+          - DEPLOYMENT_STOP_ON_ALARM
+    DependsOn:
+      - CodeDeployApplication
+      - CodeDeployServiceRole
+      - WebServerInstance
+
+Outputs:
+  WebServerInstanceId:
+    Description: Instance ID of the web server
+    Value: !Ref WebServerInstance
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-instance-id"
+
+  WebServerPrivateIP:
+    Description: Private IP address of the web server
+    Value: !GetAtt WebServerInstance.PrivateIp
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-private-ip"
+
+  WebServerSecurityGroupId:
+    Description: Security Group ID for the web server
+    Value: !FindInMap [EnvironmentConfig, !Ref Environment, SecurityGroupId]
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-sg-id"
+
+  CodeDeployApplication:
+    Description: CodeDeploy application name
+    Value: !Ref CodeDeployApplication
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-codedeploy-app"
+
+  CodeDeployDeploymentGroup:
+    Description: CodeDeploy deployment group name
+    Value: !Ref CodeDeployDeploymentGroup
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-codedeploy-deployment-group"
