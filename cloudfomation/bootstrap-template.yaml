@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Bootstrap template - Creates CodePipeline and required AWS services"
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Environment name
+    Default: "dev"
+    AllowedValues:
+      - "dev"
+      - "staging"
+      - "prod"
+
+  ProjectName:
+    Type: String
+    Description: Base project name for resource naming
+    Default: "arken-frontend"
+
+  GitHubConnectionArn:
+    Type: String
+    Description: ARN of the GitHub connection
+    Default: "arn:aws:codeconnections:eu-west-2:957875358766:connection/ec22428e-ffed-44f2-8cbb-b16216d8064a"
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository in format owner/repo
+    Default: "ArkenAdmin/ArkenOneFrontend"
+
+  # KeyPairName:
+  #   Type: String
+  #   Description: Existing EC2 Key Pair name
+  #   Default: "arken-frontend-dev-keypair"
+
+Mappings:
+  EnvironmentConfig:
+    dev:
+      GitHubBranch: "develop"
+    staging:
+      GitHubBranch: "staging"
+    prod:
+      GitHubBranch: "main"
+
+Resources:
+  ArtifactStore:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-artifacts-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # EnvironmentElasticIP:
+  #   Type: AWS::EC2::EIP
+  #   Properties:
+  #     Domain: vpc
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Sub "${ProjectName}-${Environment}-persistent-eip"
+  #       - Key: Environment
+  #         Value: !Ref Environment
+  #       - Key: Project
+  #         Value: !Ref ProjectName
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-codepipeline-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelineCustomPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketVersioning
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ArtifactStore.Arn
+                  - !Sub "${ArtifactStore.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-${Environment}-cloudformation-role"
+
+  CloudFormationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-cloudformation-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudFormationFullAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                Resource: "*"
+
+              # Full IAM permissions for roles and instance profiles
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:ListInstanceProfiles
+                  - iam:ListInstanceProfilesForRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:TagInstanceProfile
+                  - iam:UntagInstanceProfile
+                Resource: "*"
+
+              # CodeDeploy permissions
+              - Effect: Allow
+                Action:
+                  - codedeploy:*
+                Resource: "*"
+
+              # CloudWatch and Logs permissions
+              - Effect: Allow
+                Action:
+                  - logs:*
+                  - cloudwatch:*
+                Resource: "*"
+
+              # SSM permissions
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource: "*"
+
+              # S3 permissions for artifacts
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ArtifactStore.Arn
+                  - !Sub "${ArtifactStore.Arn}/*"
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-pipeline"
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactStore
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Ref GitHubRepo
+                BranchName: !FindInMap [EnvironmentConfig, !Ref Environment, GitHubBranch]
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: DeployInfrastructure
+          Actions:
+            - Name: CreateOrUpdateInfrastructure
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub "${ProjectName}-${Environment}-infrastructure"
+                TemplatePath: SourceOutput::infrastructure/infrastructure.yaml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationServiceRole.Arn
+                ParameterOverrides: !Sub |
+                  {
+                    "Environment": "${Environment}",
+                    "ProjectName": "${ProjectName}",
+                    "ArtifactBucketName": "${ArtifactStore}"
+                  }
+              InputArtifacts:
+                - Name: SourceOutput
+        - Name: DeployApplication
+          Actions:
+            - Name: DeployToEC2
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeploy
+                Version: "1"
+              Configuration:
+                ApplicationName: !Sub "${ProjectName}-${Environment}-app"
+                DeploymentGroupName: !Sub "${ProjectName}-${Environment}-deployment-group"
+              InputArtifacts:
+                - Name: SourceOutput
+
+Outputs:
+  PipelineName:
+    Description: "Name of the CodePipeline"
+    Value: !Ref Pipeline
+
+  ArtifactBucket:
+    Description: "Name of the artifact bucket"
+    Value: !Ref ArtifactStore
+
+  # KeyPairName:
+  #   Description: "Name of the keypair"
+  #   Value: !Ref KeyPairName
+
+  CloudFormationRoleArn:
+    Description: "CloudFormation service role ARN with full permissions"
+    Value: !GetAtt CloudFormationServiceRole.Arn
+
+  # EnvironmentElasticIP:
+  #   Description: "Persistent Elastic IP for environment"
+  #   Value: !Ref EnvironmentElasticIP
+  #   Export:
+  #     Name: !Sub "${ProjectName}-${Environment}-persistent-eip"
+
+  # ElasticIPAllocationId:
+  #   Description: "Allocation ID of persistent Elastic IP"
+  #   Value: !GetAtt EnvironmentElasticIP.AllocationId
+  #   Export:
+  #     Name: !Sub "${ProjectName}-${Environment}-eip-allocation-id"
+
+  EnvironmentInfo:
+    Description: "Project and environment combination"
+    Value: !Sub "${ProjectName}-${Environment}"
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-info"
