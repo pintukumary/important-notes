@@ -1,0 +1,11 @@
+{
+  "Parameters": {
+    "Environment": "dev",
+    "ProjectName": "arken-frontend"
+  },
+  "Tags": {
+    "Environment": "dev",
+    "Project": "arken-frontend",
+    "ManagedBy": "CodePipeline"
+  }
+}
